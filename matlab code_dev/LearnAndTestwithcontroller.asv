@@ -1,0 +1,234 @@
+
+disp('Learning and testing with controller........');
+
+totalstate =  zeros(totalDim,1);    
+internalState = totalstate(1:netDim);   
+size(internalState);
+reserviorwithcontroller=[];
+observerwithcontroller=zeros(netDim,1);
+slowsignalofreserviorwithcontroller=[];
+
+intWM = intWM0 * specRad;
+ofbWM = ofbWM0 * diag(ofbSC);
+outWM = initialOutWM;
+stateCollectMat = zeros(sampleRunlength, netDim + inputLength);
+teachCollectMat = zeros(sampleRunlength, outputLength);
+teacherPL = zeros(outputLength, plotRunlength);
+netOutPL = zeros(outputLength, plotRunlength);
+% observer=internalState(1:netDim);  %  creating observer variable
+% 
+% slowsignalofreservior=[];
+% reservior=[];
+
+if inputLength > 0
+    inputPL = zeros(inputLength, plotRunlength);
+end
+% statePL = zeros(length(plotStates),plotRunlength);
+plotindex = 0;
+msetest = zeros(1,outputLength); 
+msetrain = zeros(1,outputLength); 
+
+Length=size(reservior,2);
+count=1;
+gain=[-75 -0.5 -0.2 -0.1];
+controllervector=zeros(1,netDim);
+for i =1: initialRunlength + sampleRunlength + freeRunlength + plotRunlength
+    %in1:itialRunlength + sampleRunlength + freeRunlength + plotRunlength
+    %initialRunlength + sampleRunlength + freeRunlength + plotRunlength % loop for the time stamp
+    
+    if inputLength > 0
+        in = [diag(inputscaling) * sampleinput(:,i) + inputshift];  % in is column vector  
+    else in = [];
+    end
+    teach = [diag(teacherscaling) * sampleout(:,i) + teachershift];    % teach is column vector     
+    
+    %write input into totalstate
+    if inputLength > 0
+        totalstate(netDim+1:netDim+inputLength) = in; 
+    end
+    %update totalstate except at input positions  
+   
+       if i > initialRunlength
+          val= [intWM, inWM, ofbWM];
+          s=[intWM, inWM, ofbWM]*totalstate-controllervector'; % controller instal
+             internalState = f(s); 
+             count=count+1;
+      else
+            val= [intWM, inWM, ofbWM];
+          s=[intWM, inWM, ofbWM]*totalstate;
+             internalState = f(s); 
+             count=count+1;
+            
+            end
+   
+    
+    if linearOutputUnits
+        netOut = outWM *[internalState;in];
+    else
+        netOut = f(outWM *[internalState;in]);
+    end
+    
+    %internalState
+    totalstate = [internalState;in;netOut];
+     
+   
+   
+    reserviorwithcontroller=[reserviorwithcontroller,internalState];
+     observerwithcontroller=observerwithcontroller*0.98+internalState*0.02; 
+     slowsignalofreserviorwithcontroller=[slowsignalofreserviorwithcontroller,observerwithcontroller];%computing observer
+    if i> initialRunlength
+     principalcomponent=diagonalmatrix*maincomp'*(observerwithcontroller-observermean);
+    size(principalcomponent);
+    transposecontroller=controller';
+    controllervector=zeros(1,netDim);
+     for j=1:4
+   controllervector=controllervector+(principalcomponent(j,:)*transposecontroller(j,:)).*gain(:,j);
+  end
+      % adding slow observers 
+ end
+%     reservior=[reservior,internalState];   %adding the reserviors signals
+%     observer=observer*0.98+internalState*0.02;    %computing observer
+%     slowsignalofreservior=[slowsignalofreservior,observer]; % adding slow observers 
+    
+    %collect states and results for later use in learning procedure
+    if (i > initialRunlength) & (i <= initialRunlength + sampleRunlength) 
+        collectIndex = i - initialRunlength;
+        stateCollectMat(collectIndex,:) = [internalState' in']; %fill a row
+        if linearOutputUnits
+            teachCollectMat(collectIndex,:) = teach';
+        else
+            teachCollectMat(collectIndex,:) = (fInverse(teach))'; %fill a row
+        end
+    end
+    %force teacher output 
+    if i <= initialRunlength + sampleRunlength
+        totalstate(netDim+inputLength+1:netDim+inputLength+outputLength) = teach; 
+    end
+    %update msetest
+    if i > initialRunlength + sampleRunlength + freeRunlength
+        for j = 1:outputLength
+            msetest(1,j) = msetest(1,j) + (teach(j,1)- netOut(j,1))^2;
+        end
+    end
+    %compute new model
+    %update the outputweights
+    if i == initialRunlength + sampleRunlength
+        if WienerHopf
+            covMat = stateCollectMat' * stateCollectMat / sampleRunlength;
+            pVec = stateCollectMat' * teachCollectMat / sampleRunlength;
+            outWM = (inv(covMat) * pVec)';
+        else
+            outWM = (pinv(stateCollectMat) * teachCollectMat)'; 
+        end
+        %compute mean square errors on the training data using the newly
+        %computed weights
+        for j = 1:outputLength
+            if linearOutputUnits
+                msetrain(1,j) = sum((teachCollectMat(:,j) - ...
+                    (stateCollectMat * outWM(j,:)')).^2);
+            else
+                msetrain(1,j) = sum((f(teachCollectMat(:,j)) - ...
+                    f(stateCollectMat * outWM(j,:)')).^2);
+            end
+            msetrain(1,j) = msetrain(1,j) / sampleRunlength;
+        end
+    end    
+    %write plotting data into various plotfiles
+    if i > initialRunlength + sampleRunlength + freeRunlength 
+        plotindex = plotindex + 1;
+        if inputLength > 0
+            inputPL(:,plotindex) = in;
+        end
+        teacherPL(:,plotindex) = teach; 
+        netOutPL(:,plotindex) = netOut;
+%         for j = 1:length(plotStates)
+%             statePL(j,plotindex) = totalstate(plotStates(j),1);
+%         end
+    end
+end
+%end of the great do-loop
+
+% print diagnostics in terms of normalized RMSE (root mean square error)
+
+msetestresult = msetest / plotRunlength;
+teacherVariance = var(teacherPL');
+disp(sprintf('train NRMSE with controller = %s', num2str(sqrt(msetrain ./ teacherVariance))));
+disp(sprintf('test NRMSE with controller= %s', num2str(sqrt(msetestresult ./ teacherVariance))));
+disp(sprintf('average output weights = %s', num2str(mean(abs(outWM')))));
+
+
+i
+
+d=FindPrincipalcomponent(slowsignalofreserviorwithcontroller);
+% input plot
+% figure(fig2);
+% subplot(inputLength,1,1);
+% plot(inputPL(1,:));
+% title('final effective inputs','FontSize',8);
+% for k = 2:inputLength
+%     subplot(inputLength,1,k);
+%     plot(inputPL(k,:));
+% end
+
+
+% plot first 4 (maximally) of internal states listed in plotStates
+% if length(plotStates) > 0 
+%     figure(fig3);
+%     subplot(2,2,1);
+%     plot(statePL(1,:));
+%     title('internal states','FontSize',8);
+%     for k = 2:length(plotStates)
+%         subplot(3,3,k);
+%         plot(statePL(k,:));
+%     end    
+% end
+
+% plot weights
+ figure;
+         %plotting observers of different states
+ for state=1:9
+  subplot(3,3,state);
+ plot(slowsignalofreserviorwithcontroller(state,1:initialRunlength+1000));
+  title('Observers when  controller is implanted'); 
+ end
+%  
+
+  figure;
+ plot((reserviorwithcontroller(1:3,1:initialRunlength+4000))');
+ title('reservior signals in controller mode');
+           %plotting reservior signal of states 1 to 9
+           figure;
+ for state=1:9
+  subplot(3,3,state);
+plot(reserviorwithcontroller(state,1:initialRunlength+2000));
+  title('Signals in Reserviors with controller ');
+ end
+
+ 
+%     subplot(3,3,2)
+%  plot(reservior(2,:))
+%  
+ figure;
+    subplot(outputLength,1,1);   
+    plot(outWM(1,:));
+    title('output weights','FontSize',8);
+    for k = 2:outputLength
+        subplot(outputLength,1,k);
+        plot(outWM(k,:));
+    end  
+
+
+% plot overlay of network output and teacher  
+figure;
+subplot(outputLength,1,1);   
+plot(1:plotRunlength,teacherPL(1,:), 1:plotRunlength,netOutPL(1,:));
+title('teacher (blue) vs. net output (green) after training with controller','FontSize',8);
+for k = 2:outputLength
+    subplot(outputLength,1,k);
+    plot(1:plotRunlength,teacherPL(k,:), 1:plotRunlength,netOutPL(k,:));
+end  
+
+
+
+
+
